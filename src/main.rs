@@ -20,13 +20,8 @@ fn main() {
     sim.host("server", move || {
         async move {
             let udp_listener = net::UdpSocket::bind(server_addr).await.unwrap();
-            tracing::info!(
-                "Opening bi directional channel. {} {}",
-                udp_listener.local_addr().unwrap(),
-                turmoil::lookup("server"),
-            );
-
-            let custom_udp = quinn_adapter::CustomUdp::new(udp_listener);
+            let this_ip = turmoil::lookup("server");
+            let custom_udp = quinn_adapter::CustomUdp::new(this_ip, udp_listener);
             let config = EndpointConfig::default();
 
             tracing::info!("Creating endpoint");
@@ -75,7 +70,8 @@ fn main() {
         "client",
         async move {
             let udp_listener = net::UdpSocket::bind(client_addr).await.unwrap();
-            let custom_udp = quinn_adapter::CustomUdp::new(udp_listener);
+            let this_ip = turmoil::lookup("client");
+            let custom_udp = quinn_adapter::CustomUdp::new(this_ip, udp_listener);
             let config = EndpointConfig::default();
 
             let mut endpoint = Endpoint::new_with_abstract_socket(
@@ -88,10 +84,13 @@ fn main() {
             endpoint.set_server_config(Some(configure_server().0));
             endpoint.set_default_client_config(configure_client());
 
+            tracing::info!("Connecting to server.");
             let connection = endpoint
                 .connect((turmoil::lookup("server"), 9999).into(), "client")?
                 .await
                 .unwrap();
+
+            tracing::info!("Opening bi stream.");
             let (mut send, mut recv) = connection.open_bi().await.unwrap();
 
             send.write_all(b"hello server. From Client.").await.unwrap();
@@ -119,9 +118,7 @@ mod quinn_adapter {
 
     use std::{
         io::{self, IoSliceMut},
-        net::SocketAddr,
-        // net::SocketAddr,
-        ops::DerefMut,
+        net::{IpAddr, SocketAddr},
         task::Poll,
     };
 
@@ -130,12 +127,13 @@ mod quinn_adapter {
     use turmoil;
 
     pub struct CustomUdp {
+        ip: IpAddr,
         inner: turmoil::net::UdpSocket,
     }
 
     impl CustomUdp {
-        pub fn new(inner: turmoil::net::UdpSocket) -> Self {
-            Self { inner }
+        pub fn new(ip: IpAddr, inner: turmoil::net::UdpSocket) -> Self {
+            Self { ip, inner }
         }
     }
 
@@ -162,10 +160,9 @@ mod quinn_adapter {
             for transmit in transmits {
                 let buffer: &[u8] = &transmit.contents;
                 tracing::info!(
-                    "POLL SEND: Sending transmit to {} with len {} first 16 bytes {:.16}",
+                    "POLL SEND: Sending transmit to {} with len {}",
                     transmit.destination,
                     transmit.contents.len(),
-                    format!("{:?}", buffer)
                 );
                 let mut bytes_sent = 0;
                 loop {
@@ -207,41 +204,38 @@ mod quinn_adapter {
             };
 
             assert!(bufs.len() == meta.len());
-            let mut bufs_received = 0;
             // Fill up first buf.
-            let buf = &mut bufs[0];
-            let mut m = meta[0];
+            let mut m = &mut meta[0];
             let mut bytes_received = 0;
-            loop {
-                match self.inner.try_recv_from(buf.deref_mut()) {
-                    Ok((x, addr)) => {
-                        m.addr = addr;
-                        bytes_received += x;
-                    }
-                    Err(e) => {
-                        if matches!(e.kind(), io::ErrorKind::WouldBlock) {
-                            cx.waker().wake_by_ref();
-                            return Poll::Pending;
-                        }
-                        return Poll::Ready(Err(e));
-                    }
+            match self.inner.try_recv_from(&mut bufs[0]) {
+                Ok((x, addr)) => {
+                    m.addr = addr;
+                    bytes_received += x;
+                    tracing::info!("POLL RECV: Received {} data ", x);
                 }
-                // Figure out how to better stop here. 1200 Is the size of one transfer unit
-                if bytes_received == 1200 {
-                    break;
+                Err(e) => {
+                    if matches!(e.kind(), io::ErrorKind::WouldBlock) {
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    return Poll::Ready(Err(e));
                 }
             }
+            if bytes_received == 0 {
+                return Poll::Pending;
+            }
+
             m.len = bytes_received;
             m.stride = bytes_received;
             m.ecn = Some(ECN);
+            m.dst_ip = Some(self.ip);
 
             tracing::info!(
-                "POLL RECV: Received data with meta {:?} first 16 bytes {:.16}",
+                "POLL RECV: Received {} data with meta {:?} first 10 bytes",
+                bytes_received,
                 m,
-                format!("{:?}", buf)
             );
-            bufs_received += 1;
-            Poll::Ready(Ok(bufs_received))
+            Poll::Ready(Ok(1))
         }
 
         fn local_addr(&self) -> io::Result<SocketAddr> {

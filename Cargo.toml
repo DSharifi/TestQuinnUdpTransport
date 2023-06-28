@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 quinn = { version = "0.10.1", features = ["tls-rustls"] }
+# quinn-udp = { path = "/home/tim/oss/quinn/quinn-udp", version = "0.4.0" }
 quinn-udp = "0.4.0" 
 turmoil = "0.5"
 tokio = "1"
@@ -19,3 +20,4 @@ tower = "0.4"
 futures = "0.3"
 rustls = { version = "0.21.0", default-features = false, features = ["quic", "dangerous_configuration"]}
 rcgen = "0.11.1"
+hex = "0.4.3"
