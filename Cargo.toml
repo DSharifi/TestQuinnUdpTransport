@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-quinn = "0.10.1"
-quinn-udp = "0.4"
+quinn = { path = "/home/tim/oss/quinn/quinn", version = "0.10.1", features = ["tls-rustls"] }
+quinn-udp = { path = "/home/tim/oss/quinn/quinn-udp", version = "0.4.0" }
 turmoil = "0.5"
 tokio = "1"
 axum = "0.6"
@@ -17,3 +17,5 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 tower = "0.4"
 futures = "0.3"
+rustls = { version = "0.21.0", default-features = false, features = ["quic", "dangerous_configuration"]}
+rcgen = "0.11.1"
