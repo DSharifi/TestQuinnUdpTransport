@@ -1,8 +1,7 @@
 use quinn::{Endpoint, EndpointConfig};
-use std::net::{IpAddr, Ipv6Addr};
-use std::str;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
-use tracing::{info_span, Instrument, Span};
+use tracing::{info_span, Instrument};
 use turmoil::{net, Builder};
 
 fn main() {
@@ -12,8 +11,8 @@ fn main() {
 
     tracing_subscriber::fmt::init();
 
-    let server_addr = (IpAddr::from(Ipv6Addr::LOCALHOST), 9999);
-    let client_addr = (IpAddr::from(Ipv6Addr::LOCALHOST), 8888);
+    let server_addr = (IpAddr::from(Ipv4Addr::LOCALHOST), 9999);
+    let client_addr = (IpAddr::from(Ipv4Addr::LOCALHOST), 8888);
 
     let mut sim = Builder::new().build();
 
@@ -22,9 +21,8 @@ fn main() {
             let udp_listener = net::UdpSocket::bind(server_addr).await?;
             let custom_udp = quinn_adapter::CustomUdp::new(udp_listener);
             let config = EndpointConfig::default();
-            // get current runtime
-            let rt = tokio::runtime::Handle::current();
 
+            tracing::info!("Creating endpoint");
             let endpoint = Endpoint::new_with_abstract_socket(
                 config,
                 None,
@@ -33,7 +31,26 @@ fn main() {
             )
             .unwrap();
 
+            tracing::info!("Waiting for client to connect");
+
             let connection = endpoint.accept().await.unwrap().await.unwrap();
+            tracing::info!("Client connected.");
+
+            tracing::info!("Opening bi directional channel.");
+
+            let (mut send, mut recv) = connection.open_bi().await?;
+
+            tracing::info!("Connected to endpoint");
+
+            let buffer = &mut [0u8; 1024];
+            let bytes_read = recv
+                .read(buffer)
+                .await
+                .expect("Client could not read from channel")
+                .expect("No bytes read from channel");
+
+            let text_read = std::str::from_utf8(&buffer[..bytes_read]).expect("Invalid UTF-8");
+            tracing::info!("Server received  message {:?}.", text_read);
 
             // let text = connection.read_datagram()
             // endpoint.connect(config, addr, "client")
@@ -51,8 +68,6 @@ fn main() {
             let udp_listener = net::UdpSocket::bind(client_addr).await?;
             let custom_udp = quinn_adapter::CustomUdp::new(udp_listener);
             let config = EndpointConfig::default();
-            // get current runtime
-            let rt = tokio::runtime::Handle::current();
 
             let endpoint = Endpoint::new_with_abstract_socket(
                 config,
@@ -65,7 +80,17 @@ fn main() {
             let connection = endpoint.connect(server_addr.into(), "client")?.await?;
             let (mut send, mut recv) = connection.open_bi().await?;
 
-            send.write_all(b"hello world").await?;
+            send.write_all(b"hello server. From Client.").await?;
+
+            let buffer = &mut [0u8; 1024];
+            let bytes_read = recv
+                .read(buffer)
+                .await
+                .expect("Client could not read from channel")
+                .expect("No bytes read from channel");
+
+            let text_read = std::str::from_utf8(&buffer[..bytes_read]).expect("Invalid UTF-8");
+            tracing::info!("Client received  message {:?}.", text_read);
 
             Ok(())
         }
