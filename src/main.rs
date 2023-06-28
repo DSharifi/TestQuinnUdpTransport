@@ -113,6 +113,7 @@ mod quinn_adapter {
 
     use futures::executor::block_on;
     use quinn::{self, udp::Transmit, AsyncUdpSocket, Runtime};
+    use std::future::Future;
     use turmoil;
 
     pub struct CustomUdp {
@@ -144,10 +145,16 @@ mod quinn_adapter {
             // ready!(self.socket.writable())?;
             for transmit in transmits {
                 let buffer: &[u8] = &transmit.contents;
-                self.inner.send_to(buffer, transmit.destination);
+                let fut = self.inner.send_to(buffer, transmit.destination);
+                let pin = std::pin::pin!(fut);
+                let a = pin.poll(cx);
             }
-            Poll::Ready(Ok(transmits.len()))
-            // }
+
+            if transmits.is_empty() {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(transmits.len()))
+            }
         }
 
         fn poll_recv(
