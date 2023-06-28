@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-quinn = { path = "/home/tim/oss/quinn/quinn", version = "0.10.1", features = ["tls-rustls"] }
-quinn-udp = { path = "/home/tim/oss/quinn/quinn-udp", version = "0.4.0" }
+quinn = { version = "0.10.1", features = ["tls-rustls"] }
+quinn-udp = "0.4.0" 
 turmoil = "0.5"
 tokio = "1"
 axum = "0.6"
