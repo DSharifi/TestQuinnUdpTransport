@@ -2,6 +2,7 @@ use quinn::{ClientConfig, Endpoint, EndpointConfig, ServerConfig};
 use rustls;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{info_span, Instrument};
 use turmoil::{net, Builder};
 
@@ -15,7 +16,9 @@ fn main() {
     let server_addr = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
     let client_addr = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 8888);
 
-    let mut sim = Builder::new().build();
+    let mut sim = Builder::new()
+        .simulation_duration(Duration::from_secs(30))
+        .build();
 
     sim.host("server", move || {
         async move {
@@ -38,29 +41,32 @@ fn main() {
             tracing::info!("Waiting for client to connect");
 
             let connection = endpoint.accept().await.unwrap().await.unwrap();
-            tracing::info!("Client connected.");
 
-            tracing::info!("Opening bi directional channel.");
+            tracing::info!("Client connected. Opening bi directional channel.");
 
-            let (_, mut recv) = connection.open_bi().await?;
+            let (mut sender, mut recv) = connection.accept_bi().await?;
 
-            tracing::info!("Connected to endpoint");
+            tracing::info!("Waiting for message from client.");
 
             let buffer = &mut [0u8; 1024];
             let bytes_read = recv
                 .read(buffer)
                 .await
-                .expect("Client could not read from channel")
+                .expect("Could not read from channel")
                 .expect("No bytes read from channel");
 
             let text_read = std::str::from_utf8(&buffer[..bytes_read]).expect("Invalid UTF-8");
             tracing::info!("Server received  message {:?}.", text_read);
 
-            // let text = connection.read_datagram()
-            // endpoint.connect(config, addr, "client")
+            tracing::info!("Sending message.");
 
-            // let text = str::from_utf8(buffer);
-            // tracing::info!("Got message {:?}. From {:?}.", text, sender_socket);
+            sender.write_all(b"hello client.").await.unwrap();
+
+            tracing::info!("Message sent.");
+
+            // sleep so channel doesn't get closed before client can read.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+
             Ok(())
         }
         .instrument(info_span!("server"))
@@ -93,13 +99,18 @@ fn main() {
             tracing::info!("Opening bi stream.");
             let (mut send, mut recv) = connection.open_bi().await.unwrap();
 
+            tracing::info!("Sending message to server.");
+
             send.write_all(b"hello server. From Client.").await.unwrap();
 
+            tracing::info!("Listening for message.");
+
+            // tokio::time::sleep(Duration::from_secs(3)).await;
             let buffer = &mut [0u8; 1024];
             let bytes_read = recv
                 .read(buffer)
                 .await
-                .expect("Client could not read from channel")
+                .expect("Could not read from channel")
                 .expect("No bytes read from channel");
 
             let text_read = std::str::from_utf8(&buffer[..bytes_read]).expect("Invalid UTF-8");
@@ -114,7 +125,7 @@ fn main() {
 }
 
 mod quinn_adapter {
-    const ECN: quinn_udp::EcnCodepoint = quinn_udp::EcnCodepoint::Ect0;
+    const ECN: quinn_udp::EcnCodepoint = quinn_udp::EcnCodepoint::Ect1;
 
     use std::{
         io::{self, IoSliceMut},
@@ -150,20 +161,22 @@ mod quinn_adapter {
             cx: &mut std::task::Context,
             transmits: &[Transmit],
         ) -> Poll<Result<usize, io::Error>> {
-            let _ = match std::pin::pin!(self.inner.writable()).poll(cx) {
+            tokio::pin! {let fut = self.inner.writable();};
+
+            let _ = match fut.poll(cx) {
                 Poll::Ready(x) => x?,
                 Poll::Pending => return Poll::Pending,
             };
 
             let mut transmits_sent = 0;
-            tracing::info!("POLL SEND: Sending {} transmists", transmits.len());
+            // tracing::info!("POLL SEND: Sending {} transmists", transmits.len());
             for transmit in transmits {
                 let buffer: &[u8] = &transmit.contents;
-                tracing::info!(
-                    "POLL SEND: Sending transmit to {} with len {}",
-                    transmit.destination,
-                    transmit.contents.len(),
-                );
+                // tracing::info!(
+                //     "POLL SEND: Sending transmit to {} with len {}",
+                //     transmit.destination,
+                //     transmit.contents.len(),
+                // );
                 let mut bytes_sent = 0;
                 loop {
                     match self.inner.try_send_to(buffer, transmit.destination) {
@@ -186,7 +199,7 @@ mod quinn_adapter {
                 transmits_sent += 1;
             }
 
-            tracing::info!("POLL SEND: Successfully sent {} transmits", transmits_sent);
+            // tracing::info!("POLL SEND: Successfully sent {} transmits", transmits_sent);
             Poll::Ready(Ok(transmits_sent))
         }
 
@@ -196,7 +209,9 @@ mod quinn_adapter {
             bufs: &mut [IoSliceMut<'_>],
             meta: &mut [quinn::udp::RecvMeta],
         ) -> Poll<io::Result<usize>> {
-            let _ = match std::pin::pin!(self.inner.readable()).poll(cx) {
+            tokio::pin! {let fut = self.inner.readable();};
+            let _ = match fut.poll(cx) {
+                // let _ = match std::pin::pin!(self.inner.readable()).poll(cx) {
                 Poll::Ready(x) => x?,
                 Poll::Pending => {
                     return Poll::Pending;
@@ -211,7 +226,13 @@ mod quinn_adapter {
                 Ok((x, addr)) => {
                     m.addr = addr;
                     bytes_received += x;
-                    tracing::info!("POLL RECV: Received {} data ", x);
+
+                    // if x > bufs[0].len() {
+                    //     tracing::info!("POLL RECV: BUFFER IS TOO SMALL");
+                    // } else {
+                    //     tracing::info!("POLL RECV: BUFFER IS BIG ENOUGH");
+                    // }
+                    // tracing::info!("POLL RECV: Received {} data ", x);
                 }
                 Err(e) => {
                     if matches!(e.kind(), io::ErrorKind::WouldBlock) {
@@ -230,11 +251,11 @@ mod quinn_adapter {
             m.ecn = Some(ECN);
             m.dst_ip = Some(self.ip);
 
-            tracing::info!(
-                "POLL RECV: Received {} data with meta {:?} first 10 bytes",
-                bytes_received,
-                m,
-            );
+            // tracing::info!(
+            //     "POLL RECV: Received {} data with meta {:?} first 10 bytes",
+            //     bytes_received,
+            //     m,
+            // );
             Poll::Ready(Ok(1))
         }
 
